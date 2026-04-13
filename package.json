@@ -1,0 +1,492 @@
+#!/usr/bin/env bash
+# ══════════════════════════════════════════════════════════════
+# Sana Installer — macOS & Linux
+# ══════════════════════════════════════════════════════════════
+# Usage (paste into any terminal):
+#   curl -fsSL https://withnreach.com/Sana/install.sh | bash
+#
+# What this does:
+#   1. Detects your OS and architecture
+#   2. Installs Node.js if not present
+#   3. Creates the Sana app in ~/sana
+#   4. Installs dependencies
+#   5. Starts Sana in the background
+#   6. Opens your browser to complete setup
+# ══════════════════════════════════════════════════════════════
+
+set -e
+
+# ── Colors ────────────────────────────────────────────────────
+PURPLE='\033[0;35m'
+GREEN='\033[0;32m'
+CYAN='\033[0;36m'
+YELLOW='\033[1;33m'
+RED='\033[0;31m'
+BOLD='\033[1m'
+NC='\033[0m'
+
+# ── Config ────────────────────────────────────────────────────
+SANA_VERSION="1.0.0"
+SANA_DIR="$HOME/sana"
+SANA_BUNDLE_URL="https://withnreach.com/Sana/sana-bundle-v11.js"
+SANA_PORT=7343
+NODE_VERSION="20"
+
+# ── Helpers ───────────────────────────────────────────────────
+log()     { echo -e "${PURPLE}[Sana]${NC} $1"; }
+success() { echo -e "${GREEN}[Sana]${NC} ✓ $1"; }
+warn()    { echo -e "${YELLOW}[Sana]${NC} ⚠ $1"; }
+error()   { echo -e "${RED}[Sana]${NC} ✗ $1"; exit 1; }
+step()    { echo -e "\n${BOLD}${CYAN}── $1${NC}"; }
+
+# ── Banner ────────────────────────────────────────────────────
+echo ""
+echo -e "${PURPLE}${BOLD}"
+echo "   ███████╗ █████╗ ███╗   ██╗ █████╗ "
+echo "   ██╔════╝██╔══██╗████╗  ██║██╔══██╗"
+echo "   ███████╗███████║██╔██╗ ██║███████║"
+echo "   ╚════██║██╔══██║██║╚██╗██║██╔══██║"
+echo "   ███████║██║  ██║██║ ╚████║██║  ██║"
+echo "   ╚══════╝╚═╝  ╚═╝╚═╝  ╚═══╝╚═╝  ╚═╝"
+echo -e "${NC}"
+echo -e "${CYAN}   Educational Intelligence — v${SANA_VERSION}${NC}"
+echo ""
+
+# ── Detect OS ─────────────────────────────────────────────────
+step "Detecting environment"
+
+OS="unknown"
+ARCH=$(uname -m)
+
+case "$(uname -s)" in
+  Darwin*)  OS="macos";;
+  Linux*)   OS="linux";;
+  *)        error "Unsupported OS: $(uname -s)";;
+esac
+
+case "$ARCH" in
+  x86_64)  ARCH="x64";;
+  arm64|aarch64) ARCH="arm64";;
+  *)        warn "Unknown architecture: $ARCH — defaulting to x64"; ARCH="x64";;
+esac
+
+success "Detected: $OS ($ARCH)"
+
+# ── Check/Install Node.js ─────────────────────────────────────
+step "Checking Node.js"
+
+install_node() {
+  log "Installing Node.js ${NODE_VERSION}..."
+
+  if command -v brew &>/dev/null; then
+    # macOS with Homebrew
+    brew install node@${NODE_VERSION} --quiet
+    success "Node.js installed via Homebrew"
+  elif command -v apt-get &>/dev/null; then
+    # Debian/Ubuntu
+    curl -fsSL https://deb.nodesource.com/setup_${NODE_VERSION}.x | sudo -E bash - &>/dev/null
+    sudo apt-get install -y nodejs &>/dev/null
+    success "Node.js installed via apt"
+  elif command -v dnf &>/dev/null; then
+    # Fedora/RHEL
+    sudo dnf install -y nodejs &>/dev/null
+    success "Node.js installed via dnf"
+  elif command -v yum &>/dev/null; then
+    # CentOS
+    curl -fsSL https://rpm.nodesource.com/setup_${NODE_VERSION}.x | sudo bash - &>/dev/null
+    sudo yum install -y nodejs &>/dev/null
+    success "Node.js installed via yum"
+  else
+    # Manual install via NVM
+    log "Installing NVM then Node.js..."
+    curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash &>/dev/null
+    export NVM_DIR="$HOME/.nvm"
+    [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+    nvm install ${NODE_VERSION} &>/dev/null
+    nvm use ${NODE_VERSION} &>/dev/null
+    success "Node.js installed via NVM"
+  fi
+}
+
+if command -v node &>/dev/null; then
+  NODE_VER=$(node --version | cut -d'v' -f2 | cut -d'.' -f1)
+  if [ "$NODE_VER" -ge "18" ] 2>/dev/null; then
+    success "Node.js $(node --version) found"
+  else
+    warn "Node.js $(node --version) is too old — upgrading"
+    install_node
+  fi
+else
+  install_node
+fi
+
+# Verify npm
+if ! command -v npm &>/dev/null; then
+  error "npm not found after Node.js install — please install Node.js manually from nodejs.org"
+fi
+
+# ── Create Sana directory ─────────────────────────────────────
+step "Creating Sana directory"
+
+if [ -d "$SANA_DIR" ]; then
+  warn "Sana directory already exists at $SANA_DIR"
+  read -p "  Update existing installation? [Y/n] " -n 1 -r
+  echo ""
+  if [[ ! $REPLY =~ ^[Yy]$ ]] && [[ ! -z "$REPLY" ]]; then
+    log "Installation cancelled"
+    exit 0
+  fi
+fi
+
+mkdir -p "$SANA_DIR/src"
+mkdir -p "$SANA_DIR/data"
+mkdir -p "$SANA_DIR/logs"
+success "Directory created: $SANA_DIR"
+
+# ── Download Sana bundle ──────────────────────────────────────
+step "Downloading Sana"
+
+log "Downloading intelligence bundle..."
+
+# In production this fetches from withnreach.com/Sana
+# For local/dev use, check if bundle exists nearby first
+if [ -f "$(pwd)/sana-bundle-v11.js" ]; then
+  cp "$(pwd)/sana-bundle-v11.js" "$SANA_DIR/src/sana-bundle-v11.js"
+  success "Bundle copied from local directory"
+elif [ -f "$HOME/Downloads/sana-bundle-v11.js" ]; then
+  cp "$HOME/Downloads/sana-bundle-v11.js" "$SANA_DIR/src/sana-bundle-v11.js"
+  success "Bundle copied from Downloads"
+else
+  # Download from CDN
+  if command -v curl &>/dev/null; then
+    curl -fsSL "$SANA_BUNDLE_URL" -o "$SANA_DIR/src/sana-bundle-v11.js"
+  elif command -v wget &>/dev/null; then
+    wget -q "$SANA_BUNDLE_URL" -O "$SANA_DIR/src/sana-bundle-v11.js"
+  else
+    error "Neither curl nor wget found — cannot download bundle"
+  fi
+  success "Bundle downloaded"
+fi
+
+# Verify bundle downloaded
+if [ ! -f "$SANA_DIR/src/sana-bundle-v11.js" ]; then
+  error "Bundle not found after download — check your connection"
+fi
+
+BUNDLE_SIZE=$(wc -c < "$SANA_DIR/src/sana-bundle-v11.js")
+if [ "$BUNDLE_SIZE" -lt 50000 ]; then
+  error "Bundle too small ($BUNDLE_SIZE bytes) — download may have failed"
+fi
+
+success "Bundle verified ($(echo $BUNDLE_SIZE | awk '{printf "%.0fKB", $1/1024}'))"
+
+# ── Write app files ───────────────────────────────────────────
+step "Writing app files"
+
+# package.json
+cat > "$SANA_DIR/package.json" << 'PKGJSON'
+{
+  "name": "sana-desktop",
+  "version": "1.0.0",
+  "description": "Sana Educational Intelligence",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron src/main.js",
+    "serve": "node src/serve.js"
+  },
+  "dependencies": {
+    "ws": "^8.16.0"
+  },
+  "devDependencies": {
+    "electron": "^29.0.0"
+  }
+}
+PKGJSON
+
+# Lightweight HTTP server (fallback if Electron not available)
+cat > "$SANA_DIR/src/serve.js" << 'SERVEJS'
+/**
+ * Sana — Lightweight server mode
+ * Runs when Electron is not available.
+ * Serves the Sana overlay page and opens it in the default browser.
+ */
+const http  = require('http');
+const fs    = require('fs');
+const path  = require('path');
+const { exec } = require('child_process');
+
+const PORT     = process.env.SANA_PORT || 7343;
+const SANA_DIR = path.join(__dirname, '..');
+
+const MIME = {
+  '.js':   'application/javascript',
+  '.html': 'text/html',
+  '.css':  'text/css',
+  '.json': 'application/json'
+};
+
+const server = http.createServer((req, res) => {
+  // Serve files from src/
+  let filePath = path.join(SANA_DIR, 'src', req.url === '/' ? 'index.html' : req.url);
+  const ext    = path.extname(filePath);
+
+  if (!fs.existsSync(filePath)) {
+    res.writeHead(404); res.end('Not found'); return;
+  }
+
+  res.writeHead(200, {
+    'Content-Type':  MIME[ext] || 'text/plain',
+    'Cache-Control': 'no-cache',
+    'Access-Control-Allow-Origin': '*'
+  });
+  fs.createReadStream(filePath).pipe(res);
+});
+
+server.listen(PORT, '127.0.0.1', () => {
+  const url = `http://127.0.0.1:${PORT}`;
+  console.log(`[Sana] Running at ${url}`);
+  console.log(`[Sana] Press Ctrl+C to stop\n`);
+
+  // Open browser
+  const cmd = process.platform === 'darwin'  ? `open "${url}"` :
+              process.platform === 'win32'   ? `start "${url}"` :
+              `xdg-open "${url}"`;
+  exec(cmd, (err) => {
+    if (err) console.log(`[Sana] Open ${url} in your browser`);
+  });
+});
+
+server.on('error', (e) => {
+  if (e.code === 'EADDRINUSE') {
+    console.error(`[Sana] Port ${PORT} in use — is Sana already running?`);
+  } else {
+    console.error('[Sana] Server error:', e.message);
+  }
+  process.exit(1);
+});
+SERVEJS
+
+success "App files written"
+
+# ── Write index.html ──────────────────────────────────────────
+cat > "$SANA_DIR/src/index.html" << 'INDEXHTML'
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Sana</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{width:100vw;height:100vh;background:transparent;overflow:hidden;pointer-events:none;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}
+  #sana-invoke-trigger,#sana-sovereign-dialog,#sana-sovereign-host,#sana-portal-panel,#sana-portal-overlay{pointer-events:all}
+  #sana-setup{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:#0a0612;border:1px solid rgba(167,139,250,0.3);border-radius:16px;padding:32px;width:380px;pointer-events:all;text-align:center;color:#f5f0ff}
+  #sana-setup h1{font-size:28px;font-weight:800;margin-bottom:8px;background:linear-gradient(135deg,#a78bfa,#34d399);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+  #sana-setup p{font-size:13px;color:#9ca3af;margin-bottom:20px;line-height:1.6}
+  #sana-setup input{width:100%;padding:10px 14px;background:rgba(255,255,255,0.06);border:1px solid rgba(167,139,250,0.3);border-radius:8px;color:#f5f0ff;font-size:13px;margin-bottom:10px;outline:none}
+  #sana-setup button{width:100%;padding:11px;background:linear-gradient(135deg,#7c3aed,#a78bfa);border:none;border-radius:8px;color:#fff;font-size:14px;font-weight:700;cursor:pointer;margin-top:6px}
+  #sana-setup .skip{background:transparent;border:1px solid rgba(167,139,250,0.3);color:#9ca3af;margin-top:8px}
+</style>
+</head>
+<body>
+
+<div id="sana-setup">
+  <h1>🧠 Sana</h1>
+  <p>Educational intelligence that learns how you learn.<br>Let's get started.</p>
+  <input type="text"  id="setup-name"    placeholder="Your name (optional)">
+  <input type="email" id="setup-email"   placeholder="Email (for cross-app memory)">
+  <select id="setup-role" style="width:100%;padding:10px 14px;background:rgba(255,255,255,0.06);border:1px solid rgba(167,139,250,0.3);border-radius:8px;color:#f5f0ff;font-size:13px;margin-bottom:10px;outline:none">
+    <option value="student">I'm a student</option>
+    <option value="teacher">I'm a teacher</option>
+    <option value="parent">I'm a parent</option>
+  </select>
+  <input type="text"  id="setup-subject" placeholder="Main subject (e.g. Cybersecurity)">
+  <button onclick="startSana()">Start Sana</button>
+  <button class="skip" onclick="startSana(true)">Skip setup — just launch</button>
+</div>
+
+<script src="sana-bundle-v11.js"></script>
+<script>
+function startSana(skip) {
+  var name    = document.getElementById('setup-name').value.trim();
+  var email   = document.getElementById('setup-email').value.trim();
+  var role    = document.getElementById('setup-role').value;
+  var subject = document.getElementById('setup-subject').value.trim() || 'General';
+
+  // Hide setup UI
+  var setup = document.getElementById('sana-setup');
+  setup.style.transition = 'opacity 0.4s';
+  setup.style.opacity = '0';
+  setTimeout(function(){ setup.remove(); }, 400);
+
+  // Store preferences
+  try {
+    localStorage.setItem('sana-name',    name);
+    localStorage.setItem('sana-email',   email);
+    localStorage.setItem('sana-role',    role);
+    localStorage.setItem('sana-subject', subject);
+  } catch(e) {}
+
+  // Initialize Sana
+  window._sanaInvokeConfig = {
+    appId:           'sana-desktop',
+    subject:         subject,
+    floatingTrigger: true,
+    keyboardTrigger: true
+  };
+
+  if (typeof SanaInvoke !== 'undefined') {
+    SanaInvoke.init(window._sanaInvokeConfig);
+  }
+
+  if (typeof SanaMind     !== 'undefined') SanaMind.init();
+  if (typeof SanaCognitive!== 'undefined') SanaCognitive.init();
+  if (typeof SanaEthics   !== 'undefined') SanaEthics.init();
+  if (typeof SanaVoice    !== 'undefined') SanaVoice.init();
+  if (typeof SanaAdapt    !== 'undefined') SanaAdapt.init();
+  if (typeof SanaSecurity !== 'undefined') SanaSecurity.init();
+
+  // Greet
+  setTimeout(function() {
+    if (typeof SanaVoice !== 'undefined') {
+      SanaVoice.characterSpeak('session_start', { uid: email || 'local' });
+    }
+    if (typeof SanaInvoke !== 'undefined') {
+      SanaInvoke.invoke('auto');
+    }
+  }, 800);
+
+  console.log('[Sana] Started — ' + subject + ' | ' + role);
+}
+</script>
+</body>
+</html>
+INDEXHTML
+
+success "Interface written"
+
+# ── Install dependencies ──────────────────────────────────────
+step "Installing dependencies"
+
+cd "$SANA_DIR"
+
+log "Installing npm packages..."
+npm install --silent 2>/dev/null || npm install
+
+# Try to install Electron (optional — falls back to serve mode)
+log "Installing Electron (this may take a moment)..."
+npm install electron --save-dev --silent 2>/dev/null &
+ELECTRON_PID=$!
+
+# Don't wait forever — give Electron 60s then continue anyway
+ELECTRON_TIMEOUT=60
+ELAPSED=0
+while kill -0 $ELECTRON_PID 2>/dev/null; do
+  sleep 2
+  ELAPSED=$((ELAPSED + 2))
+  if [ $ELAPSED -ge $ELECTRON_TIMEOUT ]; then
+    warn "Electron install taking too long — will use server mode"
+    kill $ELECTRON_PID 2>/dev/null || true
+    break
+  fi
+done
+
+success "Dependencies installed"
+
+# ── Write launch script ───────────────────────────────────────
+step "Creating launch command"
+
+# Create the 'sana' command
+SANA_CMD="/usr/local/bin/sana"
+
+if [ -w "/usr/local/bin" ] 2>/dev/null; then
+  cat > "$SANA_CMD" << SANACMD
+#!/usr/bin/env bash
+cd "$SANA_DIR"
+if [ -d node_modules/electron ]; then
+  ./node_modules/.bin/electron src/main.js "\$@"
+else
+  node src/serve.js "\$@"
+fi
+SANACMD
+  chmod +x "$SANA_CMD"
+  success "Command installed: sana"
+else
+  # No write access — add to shell profile instead
+  SHELL_PROFILE="$HOME/.bashrc"
+  [ -f "$HOME/.zshrc" ] && SHELL_PROFILE="$HOME/.zshrc"
+
+  ALIAS_LINE="alias sana='cd $SANA_DIR && node src/serve.js'"
+
+  if ! grep -q "alias sana=" "$SHELL_PROFILE" 2>/dev/null; then
+    echo "" >> "$SHELL_PROFILE"
+    echo "# Sana Educational Intelligence" >> "$SHELL_PROFILE"
+    echo "$ALIAS_LINE" >> "$SHELL_PROFILE"
+    success "Added 'sana' command to $SHELL_PROFILE"
+  fi
+fi
+
+# ── macOS: request accessibility permission ───────────────────
+if [ "$OS" = "macos" ]; then
+  step "Accessibility permission (macOS)"
+  log "Sana needs Accessibility access to observe any app."
+  log "We'll open System Settings now."
+  echo ""
+  echo -e "${YELLOW}  → System Settings will open${NC}"
+  echo -e "${YELLOW}  → Go to Privacy & Security → Accessibility${NC}"
+  echo -e "${YELLOW}  → Add your terminal app and toggle it ON${NC}"
+  echo ""
+  read -p "  Press Enter to open System Settings..." -r
+  open "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility" 2>/dev/null || true
+fi
+
+# ── Start Sana ────────────────────────────────────────────────
+step "Starting Sana"
+
+cd "$SANA_DIR"
+
+if [ -d node_modules/electron ]; then
+  log "Starting in desktop mode..."
+  nohup ./node_modules/.bin/electron src/main.js > logs/sana.log 2>&1 &
+  SANA_PID=$!
+  echo $SANA_PID > data/sana.pid
+  sleep 2
+  if kill -0 $SANA_PID 2>/dev/null; then
+    success "Sana running (PID $SANA_PID)"
+  else
+    warn "Desktop mode failed — falling back to server mode"
+    nohup node src/serve.js > logs/sana.log 2>&1 &
+    SANA_PID=$!
+    echo $SANA_PID > data/sana.pid
+    sleep 1
+  fi
+else
+  log "Starting in server mode..."
+  nohup node src/serve.js > logs/sana.log 2>&1 &
+  SANA_PID=$!
+  echo $SANA_PID > data/sana.pid
+  sleep 1
+fi
+
+# Open browser
+URL="http://127.0.0.1:${SANA_PORT}"
+if [ "$OS" = "macos" ]; then
+  open "$URL" 2>/dev/null || true
+else
+  xdg-open "$URL" 2>/dev/null || \
+  sensible-browser "$URL" 2>/dev/null || \
+  log "Open $URL in your browser"
+fi
+
+# ── Done ──────────────────────────────────────────────────────
+echo ""
+echo -e "${GREEN}${BOLD}══════════════════════════════════════${NC}"
+echo -e "${GREEN}${BOLD}  Sana is running.${NC}"
+echo -e "${GREEN}${BOLD}══════════════════════════════════════${NC}"
+echo ""
+echo -e "  ${CYAN}Browser:${NC}  $URL"
+echo -e "  ${CYAN}Shortcut:${NC} Alt+S  (or click the 🧠 button)"
+echo -e "  ${CYAN}Logs:${NC}     $SANA_DIR/logs/sana.log"
+echo -e "  ${CYAN}Stop:${NC}     sana stop  (or close the window)"
+echo ""
+echo -e "  ${PURPLE}Sana is observing. Start working.${NC}"
+echo ""
